@@ -28,6 +28,7 @@ import tap_mysql.sync_strategies.full_table as full_table
 import tap_mysql.sync_strategies.incremental as incremental
 
 from tap_mysql.connection import connect_with_backoff, MySQLConnection
+import tap_mysql.ssh_tunnel as ssh_tunnel
 
 
 Column = collections.namedtuple('Column', [
@@ -51,7 +52,6 @@ REQUIRED_CONFIG_KEYS = [
 LOGGER = singer.get_logger()
 
 pymysql.converters.conversions[pendulum.Pendulum] = pymysql.converters.escape_datetime
-
 
 STRING_TYPES = set([
     'char',
@@ -769,6 +769,8 @@ def main():
         do_sync(mysql_conn, args.config, catalog, state)
     else:
         LOGGER.info("No properties were selected")
+
+    ssh_tunnel.close()
 
 if __name__ == "__main__":
     main()
