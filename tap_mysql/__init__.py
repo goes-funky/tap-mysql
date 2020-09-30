@@ -748,6 +748,15 @@ def log_server_params(mysql_conn):
         except pymysql.err.InternalError as e:
             LOGGER.warning("Encountered error checking server params. Error: (%s) %s", *e.args)
 
+def validate_connect(mysql_conn):
+    mysql_conn.connect()
+    with mysql_conn.cursor() as cur:
+        cur.execute("SELECT 1")
+        one = cur.fetchone()
+        if one[0] != 1:
+            raise Exception("connection failed")
+
+
 @utils.handle_top_exception(LOGGER)
 def main():
     args = utils.parse_args(REQUIRED_CONFIG_KEYS)
@@ -756,21 +765,30 @@ def main():
     os.environ['TZ'] = 'UTC'
 
     mysql_conn = MySQLConnection(args.config)
-    log_server_params(mysql_conn)
+    validate_only = args.config.get("validate_only")
+    if not validate_only:
+        log_server_params(mysql_conn)
 
-    if args.discover:
-        do_discover(mysql_conn, args.config)
-    elif args.catalog:
-        state = args.state or {}
-        do_sync(mysql_conn, args.config, args.catalog, state)
-    elif args.properties:
-        catalog = Catalog.from_dict(args.properties)
-        state = args.state or {}
-        do_sync(mysql_conn, args.config, catalog, state)
-    else:
-        LOGGER.info("No properties were selected")
 
-    ssh_tunnel.close()
+    try:
+        if validate_only:
+            validate_connect(mysql_conn)
+        elif args.discover:
+            do_discover(mysql_conn, args.config)
+        elif args.catalog:
+            state = args.state or {}
+            do_sync(mysql_conn, args.config, args.catalog, state)
+        elif args.properties:
+            catalog = Catalog.from_dict(args.properties)
+            state = args.state or {}
+            do_sync(mysql_conn, args.config, catalog, state)
+        else:
+            LOGGER.info("No properties were selected")
+    except Exception as e:
+        raise e
+    finally:
+        ssh_tunnel.close()
+
 
 if __name__ == "__main__":
     main()
