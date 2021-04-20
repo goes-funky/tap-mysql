@@ -7,8 +7,6 @@ from pymysql.constants import CLIENT
 
 import singer
 import ssl
-import tap_mysql.ssh_tunnel as ssh_tunnel
-
 
 LOGGER = singer.get_logger()
 
@@ -96,11 +94,6 @@ class MySQLConnection(pymysql.connections.Connection):
             "read_timeout": READ_TIMEOUT_SECONDS,
             "charset": "utf8",
         }
-
-        if "ssh_tunnel" in config and config["ssh_tunnel"]["enabled"] == True:
-            config = ssh_tunnel.open_tunnel(config)
-            args["host"] = config["host"]
-            args["port"] = config["port"]
 
         ssl_arg = None
 
