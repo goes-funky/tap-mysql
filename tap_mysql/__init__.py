@@ -1,13 +1,13 @@
 #!/usr/bin/env python3
 # pylint: disable=missing-docstring,not-an-iterable,too-many-locals,too-many-arguments,too-many-branches,invalid-name,duplicate-code,too-many-statements,too-many-return-statements
 
-import datetime
 import collections
 import itertools
-from itertools import dropwhile
+import logging
 import copy
 import os
 import pendulum
+import re
 
 import pymysql
 import pymysqlreplication
@@ -16,7 +16,6 @@ import singer
 import singer.metrics as metrics
 import singer.schema
 
-from singer import bookmarks
 from singer import metadata
 from singer import utils
 from singer.schema import Schema
@@ -200,14 +199,17 @@ def discover_catalog(mysql_conn, config):
 
     with connect_with_backoff(mysql_conn) as open_conn:
         with open_conn.cursor() as cur:
-            cur.execute("""
+            table_schema_sql = """
             SELECT table_schema,
                    table_name,
                    table_type,
                    table_rows
                 FROM information_schema.tables
                 {}
-            """.format(table_schema_clause))
+            """.format(table_schema_clause)
+            logging.info("getting tables with {}".format(re.sub("\s{2,}", " ", table_schema_sql)))
+            cur.execute(table_schema_sql)
+            logging.info("successfully got table information")
 
             table_info = {}
 
@@ -220,7 +222,7 @@ def discover_catalog(mysql_conn, config):
                     'is_view': table_type == 'VIEW'
                 }
 
-            cur.execute("""
+            table_schema_query = """
                 SELECT table_schema,
                        table_name,
                        column_name,
@@ -233,7 +235,10 @@ def discover_catalog(mysql_conn, config):
                     FROM information_schema.columns
                     {}
                     ORDER BY table_schema, table_name
-            """.format(table_schema_clause))
+            """.format(table_schema_clause)
+            logging.info("getting table meta data with {}".format(re.sub("\s{2,}", " ", table_schema_query)))
+            cur.execute(table_schema_query)
+            logging.info("successfully got table meta data")
 
             columns = []
             rec = cur.fetchone()
@@ -763,11 +768,14 @@ def main():
     #NB> this code will only work correctly when the local time is set to UTC because of calls to the  timestamp() method.
     os.environ['TZ'] = 'UTC'
 
-    mysql_conn = MySQLConnection(args.config)
+    # gcloud fails creating temporary tables if it is inside of transactions
+    mysql_config = args.config
+    mysql_config["autocommit"] = True
+
+    mysql_conn = MySQLConnection(mysql_config)
     validate_only = args.config.get("validate_only")
     if not validate_only:
         log_server_params(mysql_conn)
-
 
     try:
         if validate_only:

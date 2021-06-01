@@ -3,6 +3,8 @@
 
 import copy
 import datetime
+import logging
+
 import singer
 from singer import metadata
 
@@ -10,7 +12,8 @@ import tap_mysql.sync_strategies.binlog as binlog
 import tap_mysql.sync_strategies.common as common
 
 from tap_mysql.connection import connect_with_backoff, MySQLConnection
-
+import copy
+import uuid
 LOGGER = singer.get_logger()
 
 
@@ -216,11 +219,29 @@ def update_incremental_full_table_state(catalog_entry, state, cursor):
 
     return state
 
+
+def _create_temp_table(open_connection, catalog_entry, columns):
+    with open_connection.cursor() as c:
+        temporary_catalog_entry = copy.deepcopy(catalog_entry)
+        logging.info("try creating temp table")
+        db_name = common.get_database_name(temporary_catalog_entry)
+        select_sql = common.generate_select_sql(catalog_entry, columns)
+        tmp_uuid = str(uuid.uuid4()).replace("-", "")
+        temp_table_name = "tmp_" + tmp_uuid
+        temp_sql = "CREATE TEMPORARY TABLE {}.{}  {}".format(common.escape(db_name), common.escape(temp_table_name), select_sql)
+        logging.info("write data to temporary table: {}".format(temp_sql))
+        c.execute(temp_sql)
+        logging.info("created temporary table successful")
+        temporary_catalog_entry.table = temp_table_name
+        return common.generate_select_sql(temporary_catalog_entry, columns)
+
+
 def sync_table(mysql_conn, catalog_entry, state, columns, stream_version):
     common.whitelist_bookmark_keys(generate_bookmark_keys(catalog_entry), catalog_entry.tap_stream_id, state)
 
     bookmark = state.get('bookmarks', {}).get(catalog_entry.tap_stream_id, {})
     version_exists = True if 'version' in bookmark else False
+
 
     initial_full_table_complete = singer.get_bookmark(state,
                                                       catalog_entry.tap_stream_id,
@@ -247,6 +268,11 @@ def sync_table(mysql_conn, catalog_entry, state, columns, stream_version):
     with connect_with_backoff(mysql_conn) as open_conn:
         with open_conn.cursor() as cur:
             select_sql = common.generate_select_sql(catalog_entry, columns)
+            try:
+                if not perform_resumable_sync:
+                    select_sql = _create_temp_table(mysql_conn, catalog_entry, columns)
+            except Exception as ex:
+                logging.warning("creating temp table failed: {}".format(str(ex)))
 
             if perform_resumable_sync:
                 LOGGER.info("Full table sync is resumable based on primary key definition, will replicate incrementally")
