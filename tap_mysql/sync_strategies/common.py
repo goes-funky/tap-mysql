@@ -3,6 +3,8 @@
 
 import copy
 import datetime
+import sys
+
 import singer
 import time
 import tzlocal
@@ -251,6 +253,8 @@ def sync_query(cursor, catalog_entry, state, select_sql, columns, stream_version
                                                   record_message.record[replication_key])
             if rows_saved % 1000 == 0:
                 singer.write_message(singer.StateMessage(value=copy.deepcopy(state)))
+                sys.stderr.flush()
+                sys.stdout.flush()
 
             row = cursor.fetchone()
 
