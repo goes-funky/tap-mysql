@@ -14,7 +14,7 @@ import pymysql
 import singer.metrics as metrics
 from singer import metadata
 from singer import utils
-
+import simplejson as json
 LOGGER = singer.get_logger()
 
 
@@ -147,32 +147,40 @@ def to_utc_datetime_str(val):
 
     return utils.strftime(the_datetime.astimezone(tz=pytz.UTC))
 
+
+def _cast_value_to_type(elem, property_type):
+    if isinstance(elem, (datetime.datetime, datetime.date, datetime.timedelta)):
+        the_utc_date = to_utc_datetime_str(elem)
+        return the_utc_date
+
+    if isinstance(elem, bytes):
+        # for BIT value, treat 0 as False and anything else as True
+        boolean_representation = elem != b'\x00'
+        return boolean_representation
+
+    if 'boolean' in property_type or property_type == 'boolean':
+        if elem is None:
+            boolean_representation = None
+        elif elem == 0:
+            boolean_representation = False
+        else:
+            boolean_representation = True
+        return boolean_representation
+    return elem
+
+
 def row_to_singer_record(catalog_entry, version, row, columns, time_extracted):
     row_to_persist = ()
     for idx, elem in enumerate(row):
         property_type = catalog_entry.schema.properties[columns[idx]].type
-
-        if isinstance(elem, (datetime.datetime, datetime.date, datetime.timedelta)):
-            the_utc_date = to_utc_datetime_str(elem)
-            row_to_persist += (the_utc_date,)
-
-        elif isinstance(elem, bytes):
-            # for BIT value, treat 0 as False and anything else as True
-            boolean_representation = elem != b'\x00'
-            row_to_persist += (boolean_representation,)
-
-        elif 'boolean' in property_type or property_type == 'boolean':
-            if elem is None:
-                boolean_representation = None
-            elif elem == 0:
-                boolean_representation = False
-            else:
-                boolean_representation = True
-            row_to_persist += (boolean_representation,)
-
-        else:
-            row_to_persist += (elem,)
+        row_to_persist += (_cast_value_to_type(elem, property_type),)
     rec = dict(zip(columns, row_to_persist))
+    return {
+            'type': 'RECORD',
+            'stream': catalog_entry.stream,
+            'record': rec,
+            'version': version
+    }
 
     return singer.RecordMessage(
         stream=catalog_entry.stream,
@@ -189,12 +197,24 @@ def whitelist_bookmark_keys(bookmark_key_set, tap_stream_id, state):
         singer.clear_bookmark(state, tap_stream_id, bk)
 
 
+def _format_message(message):
+    return json.dumps(message, use_decimal=True)
+
+
+def _write_message(message):
+    sys.stdout.write(_format_message(message) + '\n')
+
+
 def sync_query(cursor, catalog_entry, state, select_sql, columns, stream_version, params):
     replication_key = singer.get_bookmark(state,
                                           catalog_entry.tap_stream_id,
                                           'replication_key')
 
-    query_string = cursor.mogrify(select_sql, params)
+    mog_func = getattr(cursor, "mogrify", None)
+    if callable(mog_func):
+        query_string = cursor.mogrify(select_sql, params)
+    else:
+        query_string = select_sql
 
     time_extracted = utils.now()
 
@@ -218,8 +238,8 @@ def sync_query(cursor, catalog_entry, state, select_sql, columns, stream_version
                                                   row,
                                                   columns,
                                                   time_extracted)
-            singer.write_message(record_message)
 
+            _write_message(record_message)
             md_map = metadata.to_map(catalog_entry.metadata)
             stream_metadata = md_map.get((), {})
             replication_method = stream_metadata.get('replication-method')
@@ -257,6 +277,6 @@ def sync_query(cursor, catalog_entry, state, select_sql, columns, stream_version
                 sys.stdout.flush()
 
             row = cursor.fetchone()
-
+    sys.stdout.flush()
     singer.write_message(singer.StateMessage(value=copy.deepcopy(state)))
     return rows_saved

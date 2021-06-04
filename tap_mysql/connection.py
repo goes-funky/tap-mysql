@@ -3,6 +3,8 @@
 import backoff
 
 import pymysql
+import MySQLdb
+import MySQLdb.cursors
 from pymysql.constants import CLIENT
 
 import singer
@@ -21,7 +23,9 @@ match_hostname = ssl.match_hostname
                       max_tries=5,
                       factor=2)
 def connect_with_backoff(connection):
-    connection.connect()
+    con_func = getattr(connection, "connect", None)
+    if callable(con_func):
+        connection.connect()
 
     warnings = []
     with connection.cursor() as cur:
@@ -142,6 +146,23 @@ class MySQLConnection(pymysql.connections.Connection):
             self.ctx.check_hostname = check_hostname
             self.ctx.verify_mode = ssl.CERT_REQUIRED if verify_mode else ssl.CERT_NONE
             self.client_flag |= CLIENT.SSL
+
+        self._connect_args = args
+
+
+    def get_mysqlclient(self) -> MySQLdb:
+        db = MySQLdb.connect(
+            host=self._connect_args.get("host"),
+            user=self._connect_args.get("user"),
+            passwd=self._connect_args.get("password"),
+            port=self._connect_args.get("port"),
+            cursorclass=MySQLdb.cursors.SSCursor
+        )
+        """
+        TODO: support all settings (ssl,...)
+        """
+        db.autocommit(True)
+        return db
 
 
     def __enter__(self):

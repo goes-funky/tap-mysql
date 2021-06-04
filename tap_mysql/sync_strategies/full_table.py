@@ -270,6 +270,8 @@ def sync_table(mysql_conn, catalog_entry, state, columns, stream_version):
 
     pk_clause = ""
 
+    mysql_conn = mysql_conn.get_mysqlclient()
+
     with connect_with_backoff(mysql_conn) as open_conn:
         with open_conn.cursor() as cur:
             select_sql = common.generate_select_sql(catalog_entry, columns)

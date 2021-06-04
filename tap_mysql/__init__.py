@@ -283,6 +283,7 @@ def discover_catalog(mysql_conn, config):
 
                 key_properties = [c.column_name for c in cols if column_is_key_prop(c, schema)]
 
+
                 if not is_view:
                     md_map = metadata.write(md_map,
                                             (),
