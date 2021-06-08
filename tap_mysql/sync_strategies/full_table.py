@@ -4,6 +4,7 @@
 import copy
 import datetime
 import logging
+import sys
 
 import singer
 from singer import metadata
@@ -220,25 +221,26 @@ def update_incremental_full_table_state(catalog_entry, state, cursor):
     return state
 
 
-def _create_temp_table(open_connection, catalog_entry, columns, pk_clause: str):
-    with open_connection.cursor() as c:
-        temporary_catalog_entry = copy.deepcopy(catalog_entry)
-        logging.info("try creating temp table")
-        db_name = common.get_database_name(temporary_catalog_entry)
-        select_sql = common.generate_select_sql(catalog_entry, columns)
-        if pk_clause:
-            select_sql += pk_clause
-        tmp_uuid = str(uuid.uuid4()).replace("-", "")
-        temp_table_name = "tmp_" + tmp_uuid
-        temp_sql = "CREATE TEMPORARY TABLE {}.{}  {}".format(common.escape(db_name), common.escape(temp_table_name), select_sql)
-        logging.info("write data to temporary table: {}".format(temp_sql))
-        c.execute(temp_sql)
-        logging.info("created temporary table successful")
-        temporary_catalog_entry.table = temp_table_name
-        select_temp_sql = common.generate_select_sql(temporary_catalog_entry, columns)
-        if pk_clause:
-            select_temp_sql += pk_clause
-        return select_temp_sql
+def _create_temp_table(cursor, catalog_entry, columns, pk_clause: str):
+    select_sql = common.generate_select_sql(catalog_entry, columns)
+    temporary_catalog_entry = copy.deepcopy(catalog_entry)
+    logging.info("try creating temp table")
+    db_name = common.get_database_name(temporary_catalog_entry)
+    if pk_clause:
+        select_sql += pk_clause
+    tmp_uuid = str(uuid.uuid4()).replace("-", "")
+    temp_table_name = "tmp_" + tmp_uuid
+    temp_sql = "CREATE TEMPORARY TABLE {}.{}  {}".format(common.escape(db_name), common.escape(temp_table_name), select_sql)
+    logging.info("write data to temporary table: {}".format(temp_sql))
+    cursor.execute(temp_sql)
+    logging.info("created temporary table successfully")
+    temporary_catalog_entry.table = temp_table_name
+    select_temp_sql = common.generate_select_sql(temporary_catalog_entry, columns)
+
+    if pk_clause:
+        select_temp_sql += pk_clause
+    logging.info("got select: ".format(select_temp_sql))
+    return select_temp_sql
 
 
 def sync_table(mysql_conn, catalog_entry, state, columns, stream_version):
@@ -285,10 +287,11 @@ def sync_table(mysql_conn, catalog_entry, state, columns, stream_version):
             select_sql += pk_clause
 
             try:
-                select_sql = _create_temp_table(mysql_conn, catalog_entry, columns, pk_clause)
+                select_sql = _create_temp_table(cur, catalog_entry, columns, pk_clause)
             except Exception as ex:
                 logging.warning("creating temp table failed: {}".format(str(ex)))
 
+            logging.info("start sync")
 
             params = {}
 

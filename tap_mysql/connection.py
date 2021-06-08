@@ -6,7 +6,6 @@ import pymysql
 import MySQLdb
 import MySQLdb.cursors
 from pymysql.constants import CLIENT
-
 import singer
 import ssl
 
