@@ -148,8 +148,11 @@ class MySQLConnection(pymysql.connections.Connection):
 
         self._connect_args = args
 
-
     def get_mysqlclient(self) -> MySQLdb:
+        """
+        get client from mysqlclient instead of PyMySQL.
+        it's faster, but not tested with all features
+        """
         db = MySQLdb.connect(
             host=self._connect_args.get("host"),
             user=self._connect_args.get("user"),
@@ -157,9 +160,9 @@ class MySQLConnection(pymysql.connections.Connection):
             port=self._connect_args.get("port"),
             cursorclass=MySQLdb.cursors.SSCursor
         )
-        """
-        TODO: support all settings (ssl,...)
-        """
+        if self.ssl:
+            # TODO: support ssl
+            return db
         db.autocommit(True)
         return db
 
