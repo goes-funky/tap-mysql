@@ -261,8 +261,8 @@ def sync_query(cursor, catalog_entry, state, select_sql, columns, stream_version
 
     time_extracted = utils.now()
 
-    LOGGER.info('Running %s', query_string)
-    sys.stderr.flush()
+    LOGGER.info("Running {}".format(query_string))
+
     cursor.execute(select_sql, params)
 
     rows_saved = 0
