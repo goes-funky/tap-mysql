@@ -158,7 +158,9 @@ class MySQLConnection(pymysql.connections.Connection):
             user=self._connect_args.get("user"),
             passwd=self._connect_args.get("password"),
             port=self._connect_args.get("port"),
-            cursorclass=MySQLdb.cursors.SSCursor
+            cursorclass=MySQLdb.cursors.SSCursor,
+            use_unicode=True,
+            charset="utf8",
         )
         if self.ssl:
             # TODO: support ssl

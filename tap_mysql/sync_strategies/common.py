@@ -248,6 +248,7 @@ def _iterate_result(cursor) -> typing.Iterable:
         yield row
         row = cursor.fetchone()
 
+
 def sync_query(cursor, catalog_entry, state, select_sql, columns, stream_version, params):
     replication_key = singer.get_bookmark(state,
                                           catalog_entry.tap_stream_id,
