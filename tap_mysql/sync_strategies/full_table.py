@@ -239,7 +239,6 @@ def _create_temp_table(cursor, catalog_entry, columns, pk_clause: str):
 
     if pk_clause:
         select_temp_sql += pk_clause
-    logging.info("got select: ".format(select_temp_sql))
     return select_temp_sql
 
 
