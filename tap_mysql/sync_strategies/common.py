@@ -15,12 +15,12 @@ import singer.metrics as metrics
 from singer import metadata
 from singer import utils
 import simplejson as json
+
 LOGGER = singer.get_logger()
 
-
-#--------------------------------------------------------------------------------------------
+# --------------------------------------------------------------------------------------------
 # Danger! Ugly monkey patching code ahead!
-#--------------------------------------------------------------------------------------------
+# --------------------------------------------------------------------------------------------
 # NB: Upgrading pymysql from 0.7.11 --> 0.9.3 had the undocumented change
 # to how `0000-00-00 00:00:00` date/time types are returned. In 0.7.11,
 # they are returned as NULL, and in 0.9.3, they are returned as the string
@@ -29,11 +29,13 @@ LOGGER = singer.get_logger()
 original_convert_datetime = pymysql.converters.convert_datetime
 original_convert_date = pymysql.converters.convert_date
 
+
 def monkey_patch_datetime(datetime_str):
     value = original_convert_datetime(datetime_str)
     if datetime_str == value:
         return None
     return value
+
 
 def monkey_patch_date(date_str):
     value = original_convert_date(date_str)
@@ -41,13 +43,16 @@ def monkey_patch_date(date_str):
         return None
     return value
 
+
 pymysql.converters.convert_datetime = monkey_patch_datetime
 pymysql.converters.convert_date = monkey_patch_date
 
 pymysql.converters.conversions[pymysql.constants.FIELD_TYPE.DATETIME] = monkey_patch_datetime
 pymysql.converters.conversions[pymysql.constants.FIELD_TYPE.DATE] = monkey_patch_date
-#--------------------------------------------------------------------------------------------
-#--------------------------------------------------------------------------------------------
+
+
+# --------------------------------------------------------------------------------------------
+# --------------------------------------------------------------------------------------------
 
 def escape(string):
     if '`' in string:
@@ -58,6 +63,7 @@ def escape(string):
 
 def generate_tap_stream_id(table_schema, table_name):
     return table_schema + '-' + table_name
+
 
 def get_stream_version(tap_stream_id, state):
     stream_version = singer.get_bookmark(state, tap_stream_id, 'version')
@@ -124,6 +130,7 @@ def generate_select_sql(catalog_entry, columns):
     select_sql = select_sql.replace('%', '%%')
     return select_sql
 
+
 def to_utc_datetime_str(val):
     if isinstance(val, datetime.datetime):
         the_datetime = val
@@ -142,7 +149,7 @@ def to_utc_datetime_str(val):
         # which will use the local timezone thus we must set tzinfo accordingly
         # See: https://github.com/noplay/python-mysql-replication/blob/master/pymysqlreplication/row_event.py#L143-L145
 
-        #NB> this code will only work correctly when the local time is set to UTC because of the method timestamp()
+        # NB> this code will only work correctly when the local time is set to UTC because of the method timestamp()
         the_datetime = datetime.datetime.fromtimestamp(the_datetime.timestamp(), pytz.timezone('UTC'))
 
     return utils.strftime(the_datetime.astimezone(tz=pytz.UTC))
@@ -175,12 +182,11 @@ def row_to_singer_record(catalog_entry, version, row, columns, time_extracted):
         property_type = catalog_entry.schema.properties[columns[idx]].type
         row_to_persist += (_cast_value_to_type(elem, property_type),)
     rec = dict(zip(columns, row_to_persist))
-
     return {
-            'type': 'RECORD',
-            'stream': catalog_entry.stream,
-            'record': rec,
-            'version': version
+        'type': 'RECORD',
+        'stream': catalog_entry.stream,
+        'record': rec,
+        'version': version
     }
 
 
