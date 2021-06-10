@@ -28,7 +28,6 @@ import tap_mysql.sync_strategies.incremental as incremental
 
 from tap_mysql.connection import connect_with_backoff, MySQLConnection
 
-
 Column = collections.namedtuple('Column', [
     "table_schema",
     "table_name",
@@ -72,6 +71,7 @@ FLOAT_TYPES = set(['float', 'double'])
 
 DATETIME_TYPES = set(['datetime', 'timestamp', 'date', 'time'])
 
+
 def new_read_binary_json_type_inlined(self, t, large):
     if t == pymysqlreplication.packet.JSONB_TYPE_LITERAL:
         value = self.read_uint32() if large else self.read_uint16()
@@ -91,7 +91,9 @@ def new_read_binary_json_type_inlined(self, t, large):
         return self.read_uint32()
     raise ValueError('Json type %d is not handled' % t)
 
+
 pymysqlreplication.packet.BinLogPacketWrapper.read_binary_json_type_inlined = new_read_binary_json_type_inlined
+
 
 def new_read_offset_or_inline(packet, large):
     t = packet.read_uint8()
@@ -107,7 +109,9 @@ def new_read_offset_or_inline(packet, large):
         return (t, packet.read_uint32(), None)
     return (t, packet.read_uint16(), None)
 
+
 pymysqlreplication.packet.read_offset_or_inline = new_read_offset_or_inline
+
 
 def schema_for_column(c):
     '''Returns the Schema object for the given Column.'''
@@ -180,13 +184,11 @@ def create_column_metadata(cols):
 def discover_catalog(mysql_conn, config):
     '''Returns a Catalog describing the structure of the database.'''
 
-
     filter_dbs_config = config.get('filter_dbs')
-
 
     if filter_dbs_config:
         filter_dbs_clause = ",".join(["'{}'".format(db)
-                                         for db in filter_dbs_config.split(",")])
+                                      for db in filter_dbs_config.split(",")])
 
         table_schema_clause = "WHERE table_schema IN ({})".format(filter_dbs_clause)
     else:
@@ -249,9 +251,11 @@ def discover_catalog(mysql_conn, config):
             entries = []
             for (k, cols) in itertools.groupby(columns, lambda c: (c.table_schema, c.table_name)):
                 cols = list(cols)
+                schema_columns = {c.column_name: schema_for_column(c) for c in cols}
+
                 (table_schema, table_name) = k
                 schema = Schema(type='object',
-                                properties={c.column_name: schema_for_column(c) for c in cols})
+                                properties=schema_columns)
                 md = create_column_metadata(cols)
                 md_map = metadata.to_map(md)
 
@@ -277,12 +281,15 @@ def discover_catalog(mysql_conn, config):
                                             is_view)
 
                 column_is_key_prop = lambda c, s: (
-                    c.column_key == 'PRI' and
-                    s.properties[c.column_name].inclusion != 'unsupported'
+                        c.column_key == 'PRI' and
+                        s.properties[c.column_name].inclusion != 'unsupported'
                 )
 
                 key_properties = [c.column_name for c in cols if column_is_key_prop(c, schema)]
 
+                if key_properties:
+                    schema_columns = add_bin_log_cols(schema_columns,md_map)
+                    schema.properties = schema_columns
 
                 if not is_view:
                     md_map = metadata.write(md_map,
@@ -302,13 +309,25 @@ def discover_catalog(mysql_conn, config):
     return Catalog(entries)
 
 
+def add_bin_log_cols(schema, mdata):
+    for col in binlog.GENERATED_BIN_LOG_COLS:
+        col_schema = Schema(inclusion='available')
+        col_schema.type = ['string', 'null']
+        col_schema.format = 'date-time'
+        schema[col] = col_schema
+        mdata = metadata.write(mdata,
+                               ('properties', col),
+                               'generated',
+                               True)
+    return schema
+
+
 def do_discover(mysql_conn, config):
     discover_catalog(mysql_conn, config).dump()
 
 
 # TODO: Maybe put in a singer-db-utils library.
 def desired_columns(selected, table_schema):
-
     '''Return the set of column names we need to include in the SELECT.
 
     selected - set of column names marked as selected in the input catalog
@@ -388,6 +407,7 @@ def is_valid_currently_syncing_stream(selected_stream, state):
         return True
 
     return False
+
 
 def binlog_stream_requires_historical(catalog_entry, state):
     log_file = singer.get_bookmark(state,
@@ -491,7 +511,8 @@ def get_non_binlog_streams(mysql_conn, catalog, config, state):
             is_view = common.get_is_view(stream)
 
             if is_view:
-                raise Exception("Unable to replicate stream({}) with binlog because it is a view.".format(stream.stream))
+                raise Exception(
+                    "Unable to replicate stream({}) with binlog because it is a view.".format(stream.stream))
 
             LOGGER.info("LOG_BASED stream %s will resume its historical sync", stream.tap_stream_id)
 
@@ -557,13 +578,15 @@ def do_sync_incremental(mysql_conn, catalog_entry, state, columns, optional_limi
     replication_key = md_map.get((), {}).get('replication-key')
 
     if not replication_key:
-        raise Exception("Cannot use INCREMENTAL replication for table ({}) without a replication key.".format(catalog_entry.stream))
+        raise Exception(
+            "Cannot use INCREMENTAL replication for table ({}) without a replication key.".format(catalog_entry.stream))
 
     write_schema_message(catalog_entry=catalog_entry,
                          bookmark_properties=[replication_key])
 
     if optional_limit:
-        LOGGER.info("Incremental Stream %s is using an optional limit clause of %d", catalog_entry.stream, int(optional_limit))
+        LOGGER.info("Incremental Stream %s is using an optional limit clause of %d", catalog_entry.stream,
+                    int(optional_limit))
         incremental.sync_table(mysql_conn, catalog_entry, state, columns, int(optional_limit))
     else:
         incremental.sync_table(mysql_conn, catalog_entry, state, columns)
@@ -668,7 +691,7 @@ def do_sync_full_table(mysql_conn, config, catalog_entry, state, columns):
 
 def sync_non_binlog_streams(mysql_conn, non_binlog_catalog, config, state):
     for catalog_entry in non_binlog_catalog.streams:
-        columns = list(catalog_entry.schema.properties.keys())
+        columns = list(catalog_entry.schema.properties.keys() - binlog.GENERATED_BIN_LOG_COLS)
 
         if not columns:
             LOGGER.warning('There are no columns selected for stream %s, skipping it.', catalog_entry.stream)
@@ -721,6 +744,7 @@ def do_sync(mysql_conn, config, catalog, state):
     sync_non_binlog_streams(mysql_conn, non_binlog_catalog, config, state)
     sync_binlog_streams(mysql_conn, binlog_catalog, config, state)
 
+
 def log_server_params(mysql_conn):
     with connect_with_backoff(mysql_conn) as open_conn:
         try:
@@ -753,6 +777,7 @@ def log_server_params(mysql_conn):
         except pymysql.err.InternalError as e:
             LOGGER.warning("Encountered error checking server params. Error: (%s) %s", *e.args)
 
+
 def validate_connect(mysql_conn):
     mysql_conn.connect()
     with mysql_conn.cursor() as cur:
@@ -766,7 +791,7 @@ def validate_connect(mysql_conn):
 def main():
     args = utils.parse_args(REQUIRED_CONFIG_KEYS)
 
-    #NB> this code will only work correctly when the local time is set to UTC because of calls to the  timestamp() method.
+    # NB> this code will only work correctly when the local time is set to UTC because of calls to the  timestamp() method.
     os.environ['TZ'] = 'UTC'
 
     # gcloud fails creating temporary tables if it is inside of transactions
@@ -794,6 +819,7 @@ def main():
             LOGGER.info("No properties were selected")
     except Exception as e:
         raise e
+
 
 if __name__ == "__main__":
     main()

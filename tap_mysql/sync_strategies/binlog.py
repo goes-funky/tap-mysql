@@ -31,6 +31,7 @@ from pymysqlreplication.row_event import (
 LOGGER = singer.get_logger()
 
 SDC_DELETED_AT = "_sdc_deleted_at"
+GENERATED_BIN_LOG_COLS = [SDC_DELETED_AT]
 
 UPDATE_BOOKMARK_PERIOD = 1000
 
