@@ -288,7 +288,7 @@ def discover_catalog(mysql_conn, config):
                 key_properties = [c.column_name for c in cols if column_is_key_prop(c, schema)]
 
                 if key_properties:
-                    schema_columns = add_bin_log_cols(schema_columns,md_map)
+                    schema_columns = add_bin_log_cols(schema_columns, md_map)
                     schema.properties = schema_columns
 
                 if not is_view:
@@ -311,14 +311,18 @@ def discover_catalog(mysql_conn, config):
 
 def add_bin_log_cols(schema, mdata):
     for col in binlog.GENERATED_BIN_LOG_COLS:
-        col_schema = Schema(inclusion='available')
+        col_schema = Schema(inclusion='automatic')
         col_schema.type = ['string', 'null']
         col_schema.format = 'date-time'
         schema[col] = col_schema
-        mdata = metadata.write(mdata,
-                               ('properties', col),
-                               'generated',
-                               True)
+        metadata.write(mdata,
+                       ('properties', col),
+                       'generated',
+                       True)
+        metadata.write(mdata,
+                       ('properties', col),
+                       'inclusion',
+                       col_schema.inclusion)
     return schema
 
 
