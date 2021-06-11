@@ -311,7 +311,7 @@ def discover_catalog(mysql_conn, config):
 
 def add_bin_log_cols(schema, mdata):
     for col in binlog.GENERATED_BIN_LOG_COLS:
-        col_schema = Schema(inclusion='available')
+        col_schema = Schema(inclusion='automatic')
         col_schema.type = ['string', 'null']
         col_schema.format = 'date-time'
         schema[col] = col_schema
