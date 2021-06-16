@@ -17,16 +17,17 @@ import pymysql.connections
 import pymysql.err
 import re
 import tap_mysql.sync_strategies.common as common
+import hashlib
 
 from tap_mysql.connection import connect_with_backoff, MySQLConnection, make_connection_wrapper
 from pymysqlreplication.constants import FIELD_TYPE
 from pymysqlreplication import BinLogStreamReader
 from pymysqlreplication.event import RotateEvent
 from pymysqlreplication.row_event import (
-        DeleteRowsEvent,
-        UpdateRowsEvent,
-        WriteRowsEvent,
-    )
+    DeleteRowsEvent,
+    UpdateRowsEvent,
+    WriteRowsEvent,
+)
 
 LOGGER = singer.get_logger()
 
@@ -46,14 +47,18 @@ mysql_timestamp_types = {
 # NB: Event flags are an unsigned short that accounts for flags on the event itself
 # Flag docs: https://dev.mysql.com/doc/internals/en/binlog-event-flag.html
 # - Note: `mysqlbinlog` calls 0x0001 STMT_END_F, which we are using to decide if we need to bookmark
-LOG_EVENT_BINLOG_IN_USE_F = 0x0001 # Corresponds to the end log of a statement, set if log closed
-                                   # successfully after writing
+LOG_EVENT_BINLOG_IN_USE_F = 0x0001  # Corresponds to the end log of a statement, set if log closed
+# successfully after writing
+
+
+already_updated = {}
+
 
 def add_automatic_properties(catalog_entry, columns):
     catalog_entry.schema.properties[SDC_DELETED_AT] = Schema(
         type=["null", "string"],
         format="date-time"
-        )
+    )
 
     columns.append(SDC_DELETED_AT)
 
@@ -75,13 +80,14 @@ def verify_binlog_config(mysql_conn):
                 binlog_row_image = cur.fetchone()[0]
             except pymysql.err.InternalError as ex:
                 if ex.args[0] == 1193:
-                    raise Exception("Unable to replicate binlog stream because binlog_row_image system variable does not exist. MySQL version must be at least 5.6.2 to use binlog replication.")
+                    raise Exception(
+                        "Unable to replicate binlog stream because binlog_row_image system variable does not exist. MySQL version must be at least 5.6.2 to use binlog replication.")
 
                 raise ex
 
             if binlog_row_image != 'FULL':
                 raise Exception("Unable to replicate binlog stream because binlog_row_image is not set to 'FULL': {}."
-                            .format(binlog_row_image))
+                                .format(binlog_row_image))
 
 
 def verify_log_file_exists(mysql_conn, log_file, log_pos):
@@ -99,8 +105,9 @@ def verify_log_file_exists(mysql_conn, log_file, log_pos):
             current_log_pos = existing_log_file[0][1]
 
             if log_pos > current_log_pos:
-                raise Exception("Unable to replicate binlog stream because requested position ({}) for log file {} is greater than current position ({})."
-                                .format(log_pos, log_file, current_log_pos))
+                raise Exception(
+                    "Unable to replicate binlog stream because requested position ({}) for log file {} is greater than current position ({})."
+                        .format(log_pos, log_file, current_log_pos))
 
 
 def fetch_current_log_file_and_pos(mysql_conn):
@@ -126,12 +133,14 @@ def fetch_server_id(mysql_conn):
 
             return server_id
 
+
 def json_bytes_to_string(data):
     if isinstance(data, bytes):  return data.decode()
     if isinstance(data, dict):   return dict(map(json_bytes_to_string, data.items()))
     if isinstance(data, tuple):  return tuple(map(json_bytes_to_string, data))
     if isinstance(data, list):   return list(map(json_bytes_to_string, data))
     return data
+
 
 def row_to_singer_record(catalog_entry, version, db_column_map, row, time_extracted):
     row_to_persist = {}
@@ -195,6 +204,7 @@ def get_min_log_pos_per_log_file(binlog_streams_map, state):
 
     return min_log_pos_per_file
 
+
 def calculate_bookmark(mysql_conn, binlog_streams_map, state):
     min_log_pos_per_file = get_min_log_pos_per_log_file(binlog_streams_map, state)
 
@@ -210,14 +220,16 @@ def calculate_bookmark(mysql_conn, binlog_streams_map, state):
                 expired_logs = state_logs_set.difference(server_logs_set)
 
                 if expired_logs:
-                    raise Exception("Unable to replicate binlog stream because the following binary log(s) no longer exist: {}".format(
-                        ", ".join(expired_logs)))
+                    raise Exception(
+                        "Unable to replicate binlog stream because the following binary log(s) no longer exist: {}".format(
+                            ", ".join(expired_logs)))
 
                 for log_file in sorted(server_logs_set):
                     if min_log_pos_per_file.get(log_file):
                         return log_file, min_log_pos_per_file[log_file]['log_pos']
 
             raise Exception("Unable to replicate binlog stream because no binary logs exist on the server.")
+
 
 def update_bookmarks(state, binlog_streams_map, log_file, log_pos):
     for tap_stream_id in binlog_streams_map.keys():
@@ -235,7 +247,7 @@ def update_bookmarks(state, binlog_streams_map, log_file, log_pos):
 
 
 def get_db_column_types(event):
-    return {c.name:c.type for c in  event.columns}
+    return {c.name: c.type for c in event.columns}
 
 
 def handle_write_rows_event(event, catalog_entry, state, columns, rows_saved, time_extracted):
@@ -245,7 +257,7 @@ def handle_write_rows_event(event, catalog_entry, state, columns, rows_saved, ti
     for row in event.rows:
         vals = row['values']
         vals[SDC_DELETED_AT] = None
-        filtered_vals = {k:v for k,v in vals.items()
+        filtered_vals = {k: v for k, v in vals.items()
                          if k in columns}
 
         record_message = row_to_singer_record(catalog_entry,
@@ -264,11 +276,20 @@ def handle_update_rows_event(event, catalog_entry, state, columns, rows_saved, t
     stream_version = common.get_stream_version(catalog_entry.tap_stream_id, state)
     db_column_types = get_db_column_types(event)
 
+    key_properties = common.get_key_properties(catalog_entry)
+
     for row in event.rows:
         vals = row['after_values']
         vals[SDC_DELETED_AT] = None
-        filtered_vals = {k:v for k,v in vals.items()
+        filtered_vals = {k: v for k, v in vals.items()
                          if k in columns}
+        key_prop_hash = get_hashed_key_vals(filtered_vals, key_properties)
+
+        if key_prop_hash in already_updated[catalog_entry.tap_stream_id]:
+            print("sssssssss2222", key_prop_hash, filtered_vals)
+            continue
+
+        already_updated[catalog_entry.tap_stream_id].append(key_prop_hash)
 
         record_message = row_to_singer_record(catalog_entry,
                                               stream_version,
@@ -276,15 +297,28 @@ def handle_update_rows_event(event, catalog_entry, state, columns, rows_saved, t
                                               filtered_vals,
                                               time_extracted)
 
+
         singer.write_message(record_message)
 
         rows_saved = rows_saved + 1
 
     return rows_saved
 
+def get_hashed_key_vals(filtered_vals, key_properties):
+    str_vals = ''
+
+    for key in key_properties:
+        str_vals += str(filtered_vals[key])
+
+    result = hashlib.md5(str_vals.encode())
+    return result.hexdigest()
+
 def handle_delete_rows_event(event, catalog_entry, state, columns, rows_saved, time_extracted):
     stream_version = common.get_stream_version(catalog_entry.tap_stream_id, state)
     db_column_types = get_db_column_types(event)
+
+    key_properties = common.get_key_properties(catalog_entry)
+
 
     for row in event.rows:
         event_ts = datetime.datetime.utcfromtimestamp(event.timestamp).replace(tzinfo=pytz.UTC)
@@ -292,8 +326,14 @@ def handle_delete_rows_event(event, catalog_entry, state, columns, rows_saved, t
 
         vals[SDC_DELETED_AT] = event_ts
 
-        filtered_vals = {k:v for k,v in vals.items()
+        filtered_vals = {k: v for k, v in vals.items()
                          if k in columns}
+
+        key_prop_hash = get_hashed_key_vals(filtered_vals, key_properties)
+        if key_prop_hash in already_updated[catalog_entry.tap_stream_id]:
+            continue
+
+        already_updated[catalog_entry.tap_stream_id].append(key_prop_hash)
 
         record_message = row_to_singer_record(catalog_entry,
                                               stream_version,
@@ -322,6 +362,7 @@ def generate_streams_map(binlog_streams):
 
     return stream_map
 
+
 def _run_binlog_sync(mysql_conn, reader, binlog_streams_map, state):
     time_extracted = utils.now()
 
@@ -329,8 +370,10 @@ def _run_binlog_sync(mysql_conn, reader, binlog_streams_map, state):
     events_skipped = 0
 
     current_log_file, current_log_pos = fetch_current_log_file_and_pos(mysql_conn)
+    events = list(reader.__iter__())
+    events.reverse()
 
-    for binlog_event in reader:
+    for binlog_event in events:
         if isinstance(binlog_event, RotateEvent):
             state = update_bookmarks(state,
                                      binlog_streams_map,
@@ -341,7 +384,7 @@ def _run_binlog_sync(mysql_conn, reader, binlog_streams_map, state):
             streams_map_entry = binlog_streams_map.get(tap_stream_id, {})
             catalog_entry = streams_map_entry.get('catalog_entry')
             desired_columns = streams_map_entry.get('desired_columns')
-
+            already_updated[tap_stream_id] = []
             if not catalog_entry:
                 events_skipped = events_skipped + 1
 
@@ -393,8 +436,9 @@ def _run_binlog_sync(mysql_conn, reader, binlog_streams_map, state):
             break
 
         if ((rows_saved and rows_saved % UPDATE_BOOKMARK_PERIOD == 0) or
-            (events_skipped and events_skipped % UPDATE_BOOKMARK_PERIOD == 0)):
+                (events_skipped and events_skipped % UPDATE_BOOKMARK_PERIOD == 0)):
             singer.write_message(singer.StateMessage(value=copy.deepcopy(state)))
+
 
 def sync_binlog_stream(mysql_conn, config, binlog_streams, state):
     binlog_streams_map = generate_streams_map(binlog_streams)
@@ -415,6 +459,8 @@ def sync_binlog_stream(mysql_conn, config, binlog_streams, state):
 
     connection_wrapper = make_connection_wrapper(config)
 
+    selected_streams = list(filter(lambda s: common.stream_is_selected(s), binlog_streams))
+    selected_streams_table_names = [s.stream for s in selected_streams]
     try:
         reader = BinLogStreamReader(
             connection_settings={},
@@ -424,7 +470,8 @@ def sync_binlog_stream(mysql_conn, config, binlog_streams, state):
             log_pos=log_pos,
             resume_stream=True,
             only_events=[RotateEvent, WriteRowsEvent, UpdateRowsEvent, DeleteRowsEvent],
-            pymysql_wrapper=connection_wrapper
+            pymysql_wrapper=connection_wrapper,
+            only_tables=selected_streams_table_names
         )
         LOGGER.info("Starting binlog replication with log_file=%s, log_pos=%s", log_file, log_pos)
         _run_binlog_sync(mysql_conn, reader, binlog_streams_map, state)
