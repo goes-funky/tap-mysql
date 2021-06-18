@@ -253,18 +253,7 @@ def get_db_column_types(event):
     return {c.name: c.type for c in event.columns}
 
 
-def row_has_been_updated_before(catalog_entry, filtered_vals, already_updated_rows):
-    key_properties = common.get_key_properties(catalog_entry)
-    key_prop_hash = get_hashed_key_vals(filtered_vals, key_properties)
-    if key_prop_hash in already_updated_rows:
-        return True
-
-    already_updated_rows.append(key_prop_hash)
-
-    return False
-
-
-def handle_write_rows_event(event, catalog_entry, state, columns, rows_saved, time_extracted, already_updated_rows):
+def handle_write_rows_event(event, catalog_entry, state, columns, rows_saved, time_extracted):
     stream_version = common.get_stream_version(catalog_entry.tap_stream_id, state)
     db_column_types = get_db_column_types(event)
 
@@ -274,9 +263,6 @@ def handle_write_rows_event(event, catalog_entry, state, columns, rows_saved, ti
         vals[SDC_EXTRACTED_AT] = datetime.datetime.utcnow()
         filtered_vals = {k: v for k, v in vals.items()
                          if k in columns}
-
-        if row_has_been_updated_before(catalog_entry, filtered_vals, already_updated_rows):
-            continue
 
         record_message = row_to_singer_record(catalog_entry,
                                               stream_version,
@@ -290,7 +276,7 @@ def handle_write_rows_event(event, catalog_entry, state, columns, rows_saved, ti
     return rows_saved
 
 
-def handle_update_rows_event(event, catalog_entry, state, columns, rows_saved, time_extracted, already_updated_rows):
+def handle_update_rows_event(event, catalog_entry, state, columns, rows_saved, time_extracted):
     stream_version = common.get_stream_version(catalog_entry.tap_stream_id, state)
     db_column_types = get_db_column_types(event)
 
@@ -314,17 +300,7 @@ def handle_update_rows_event(event, catalog_entry, state, columns, rows_saved, t
     return rows_saved
 
 
-def get_hashed_key_vals(filtered_vals, key_properties):
-    str_vals = ''
-
-    for key in key_properties:
-        str_vals += str(filtered_vals[key])
-
-    result = hashlib.md5(str_vals.encode())
-    return result.hexdigest()
-
-
-def handle_delete_rows_event(event, catalog_entry, state, columns, rows_saved, time_extracted, already_updated_rows):
+def handle_delete_rows_event(event, catalog_entry, state, columns, rows_saved, time_extracted):
     stream_version = common.get_stream_version(catalog_entry.tap_stream_id, state)
     db_column_types = get_db_column_types(event)
 
@@ -337,9 +313,6 @@ def handle_delete_rows_event(event, catalog_entry, state, columns, rows_saved, t
 
         filtered_vals = {k: v for k, v in vals.items()
                          if k in columns}
-
-        if row_has_been_updated_before(catalog_entry, filtered_vals, already_updated_rows):
-            continue
 
         record_message = row_to_singer_record(catalog_entry,
                                               stream_version,
@@ -369,24 +342,6 @@ def generate_streams_map(binlog_streams):
     return stream_map
 
 
-def get_reversed_bin_logs(reader, current_log_file, current_log_pos, binlog_streams_map, state):
-    events = []
-    for event in reader:
-        if isinstance(event, RotateEvent):
-            state = update_bookmarks(state,
-                                     binlog_streams_map,
-                                     event.next_binlog,
-                                     event.position)
-        # The iterator across python-mysql-replication's fetchone method should ultimately terminate
-        # upon receiving an EOF packet. There seem to be some cases when a MySQL server will not send
-        # one causing binlog replication to hang.
-        if current_log_file == reader.log_file and reader.log_pos >= current_log_pos:
-            break
-        events.append(event)
-    events.reverse()
-    return events
-
-
 def _run_binlog_sync(mysql_conn, reader, binlog_streams_map, state):
     time_extracted = utils.now()
 
@@ -394,60 +349,55 @@ def _run_binlog_sync(mysql_conn, reader, binlog_streams_map, state):
     events_skipped = 0
 
     current_log_file, current_log_pos = fetch_current_log_file_and_pos(mysql_conn)
-    events = get_reversed_bin_logs(reader, current_log_file, current_log_pos, binlog_streams_map, state)
-    already_updated = {}
 
-    for binlog_event in events:
-
+    for binlog_event in reader:
         if isinstance(binlog_event, RotateEvent):
-            continue
+            state = update_bookmarks(state,
+                                     binlog_streams_map,
+                                     binlog_event.next_binlog,
+                                     binlog_event.position)
+        else:
+            tap_stream_id = common.generate_tap_stream_id(binlog_event.schema, binlog_event.table)
+            streams_map_entry = binlog_streams_map.get(tap_stream_id, {})
+            catalog_entry = streams_map_entry.get('catalog_entry')
+            desired_columns = streams_map_entry.get('desired_columns')
 
-        tap_stream_id = common.generate_tap_stream_id(binlog_event.schema, binlog_event.table)
-        streams_map_entry = binlog_streams_map.get(tap_stream_id, {})
-        if tap_stream_id not in already_updated:
-            already_updated[tap_stream_id] = []
-        already_updated_rows = already_updated[tap_stream_id]
-        catalog_entry = streams_map_entry.get('catalog_entry')
-        desired_columns = streams_map_entry.get('desired_columns')
-        if not catalog_entry:
-            events_skipped = events_skipped + 1
+            if not catalog_entry:
+                events_skipped = events_skipped + 1
 
-            if events_skipped % UPDATE_BOOKMARK_PERIOD == 0:
-                LOGGER.info("Skipped %s events so far as they were not for selected tables; %s rows extracted",
-                            events_skipped,
-                            rows_saved)
+                if events_skipped % UPDATE_BOOKMARK_PERIOD == 0:
+                    LOGGER.info("Skipped %s events so far as they were not for selected tables; %s rows extracted",
+                                events_skipped,
+                                rows_saved)
 
-        elif catalog_entry:
-            if isinstance(binlog_event, WriteRowsEvent):
-                rows_saved = handle_write_rows_event(binlog_event,
-                                                     catalog_entry,
-                                                     state,
-                                                     desired_columns,
-                                                     rows_saved,
-                                                     time_extracted,
-                                                     already_updated_rows)
+            elif catalog_entry:
+                if isinstance(binlog_event, WriteRowsEvent):
+                    rows_saved = handle_write_rows_event(binlog_event,
+                                                         catalog_entry,
+                                                         state,
+                                                         desired_columns,
+                                                         rows_saved,
+                                                         time_extracted)
 
-            elif isinstance(binlog_event, UpdateRowsEvent):
-                rows_saved = handle_update_rows_event(binlog_event,
-                                                      catalog_entry,
-                                                      state,
-                                                      desired_columns,
-                                                      rows_saved,
-                                                      time_extracted,
-                                                      already_updated_rows)
+                elif isinstance(binlog_event, UpdateRowsEvent):
+                    rows_saved = handle_update_rows_event(binlog_event,
+                                                          catalog_entry,
+                                                          state,
+                                                          desired_columns,
+                                                          rows_saved,
+                                                          time_extracted)
 
-            elif isinstance(binlog_event, DeleteRowsEvent):
-                rows_saved = handle_delete_rows_event(binlog_event,
-                                                      catalog_entry,
-                                                      state,
-                                                      desired_columns,
-                                                      rows_saved,
-                                                      time_extracted,
-                                                      already_updated_rows)
-            else:
-                LOGGER.info("Skipping event for table %s.%s as it is not an INSERT, UPDATE, or DELETE",
-                            binlog_event.schema,
-                            binlog_event.table)
+                elif isinstance(binlog_event, DeleteRowsEvent):
+                    rows_saved = handle_delete_rows_event(binlog_event,
+                                                          catalog_entry,
+                                                          state,
+                                                          desired_columns,
+                                                          rows_saved,
+                                                          time_extracted)
+                else:
+                    LOGGER.info("Skipping event for table %s.%s as it is not an INSERT, UPDATE, or DELETE",
+                                binlog_event.schema,
+                                binlog_event.table)
 
         # NB: Flag 0x1 indicates that the binlog has been closed successfully, so we can rely on this being a complete log.
         if hasattr(binlog_event, 'flags') and binlog_event.flags & LOG_EVENT_BINLOG_IN_USE_F:
@@ -455,6 +405,12 @@ def _run_binlog_sync(mysql_conn, reader, binlog_streams_map, state):
                                      binlog_streams_map,
                                      reader.log_file,
                                      reader.log_pos)
+
+        # The iterator across python-mysql-replication's fetchone method should ultimately terminate
+        # upon receiving an EOF packet. There seem to be some cases when a MySQL server will not send
+        # one causing binlog replication to hang.
+        if current_log_file == reader.log_file and reader.log_pos >= current_log_pos:
+            break
 
         if ((rows_saved and rows_saved % UPDATE_BOOKMARK_PERIOD == 0) or
                 (events_skipped and events_skipped % UPDATE_BOOKMARK_PERIOD == 0)):
