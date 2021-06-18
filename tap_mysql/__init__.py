@@ -290,12 +290,16 @@ def discover_catalog(mysql_conn, config):
                 if key_properties:
                     schema_columns = add_bin_log_cols(schema_columns, md_map)
                     schema.properties = schema_columns
-
+                    md_map = metadata.write(md_map,
+                                            (),
+                                            'y42-extraction-key',
+                                            binlog.SDC_EXTRACTED_AT)
                 if not is_view:
                     md_map = metadata.write(md_map,
                                             (),
                                             'table-key-properties',
                                             key_properties)
+
 
                 entry = CatalogEntry(
                     table=table_name,
