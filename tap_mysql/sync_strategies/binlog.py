@@ -28,11 +28,15 @@ from pymysqlreplication.row_event import (
     UpdateRowsEvent,
     WriteRowsEvent,
 )
+import datetime
 
 LOGGER = singer.get_logger()
 
-SDC_DELETED_AT = "_sdc_deleted_at"
-GENERATED_BIN_LOG_COLS = [SDC_DELETED_AT]
+SDC_DELETED_AT = "sdc_deleted_at"
+SDC_EXTRACTED_AT = "sdc_extracted_at"
+REPLICATION_KEY = SDC_EXTRACTED_AT
+
+GENERATED_BIN_LOG_COLS = [SDC_DELETED_AT, SDC_EXTRACTED_AT]
 
 UPDATE_BOOKMARK_PERIOD = 1000
 
@@ -267,6 +271,7 @@ def handle_write_rows_event(event, catalog_entry, state, columns, rows_saved, ti
     for row in event.rows:
         vals = row['values']
         vals[SDC_DELETED_AT] = None
+        vals[SDC_EXTRACTED_AT] = datetime.datetime.utcnow()
         filtered_vals = {k: v for k, v in vals.items()
                          if k in columns}
 
@@ -292,11 +297,9 @@ def handle_update_rows_event(event, catalog_entry, state, columns, rows_saved, t
     for row in event.rows:
         vals = row['after_values']
         vals[SDC_DELETED_AT] = None
+        vals[SDC_EXTRACTED_AT] = datetime.datetime.utcnow()
         filtered_vals = {k: v for k, v in vals.items()
                          if k in columns}
-
-        if row_has_been_updated_before(catalog_entry, filtered_vals, already_updated_rows):
-            continue
 
         record_message = row_to_singer_record(catalog_entry,
                                               stream_version,
@@ -330,6 +333,7 @@ def handle_delete_rows_event(event, catalog_entry, state, columns, rows_saved, t
         vals = row['values']
 
         vals[SDC_DELETED_AT] = event_ts
+        vals[SDC_EXTRACTED_AT] = datetime.datetime.utcnow()
 
         filtered_vals = {k: v for k, v in vals.items()
                          if k in columns}
@@ -381,6 +385,7 @@ def get_reversed_bin_logs(reader, current_log_file, current_log_pos, binlog_stre
         events.append(event)
     events.reverse()
     return events
+
 
 def _run_binlog_sync(mysql_conn, reader, binlog_streams_map, state):
     time_extracted = utils.now()
@@ -453,7 +458,6 @@ def _run_binlog_sync(mysql_conn, reader, binlog_streams_map, state):
 
         if ((rows_saved and rows_saved % UPDATE_BOOKMARK_PERIOD == 0) or
                 (events_skipped and events_skipped % UPDATE_BOOKMARK_PERIOD == 0)):
-
             singer.write_message(singer.StateMessage(value=copy.deepcopy(state)))
 
 
