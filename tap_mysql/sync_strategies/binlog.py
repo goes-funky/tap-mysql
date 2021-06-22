@@ -29,6 +29,7 @@ from pymysqlreplication.row_event import (
     WriteRowsEvent,
 )
 import datetime
+import time
 
 LOGGER = singer.get_logger()
 
@@ -37,6 +38,9 @@ SDC_EXTRACTED_AT = "sdc_extracted_at"
 REPLICATION_KEY = SDC_EXTRACTED_AT
 
 GENERATED_BIN_LOG_COLS = [SDC_DELETED_AT, SDC_EXTRACTED_AT]
+
+GENERATED_BIN_LOG_TYPES = [{"type": ['string', 'null'], "format": "date-time"},
+                           {"type": ['number', 'null'], "format": None}]
 
 UPDATE_BOOKMARK_PERIOD = 1000
 
@@ -260,7 +264,7 @@ def handle_write_rows_event(event, catalog_entry, state, columns, rows_saved, ti
     for row in event.rows:
         vals = row['values']
         vals[SDC_DELETED_AT] = None
-        vals[SDC_EXTRACTED_AT] = datetime.datetime.utcnow()
+        vals[SDC_EXTRACTED_AT] = time.time()
         filtered_vals = {k: v for k, v in vals.items()
                          if k in columns}
 
@@ -283,7 +287,7 @@ def handle_update_rows_event(event, catalog_entry, state, columns, rows_saved, t
     for row in event.rows:
         vals = row['after_values']
         vals[SDC_DELETED_AT] = None
-        vals[SDC_EXTRACTED_AT] = datetime.datetime.utcnow()
+        vals[SDC_EXTRACTED_AT] = time.time()
         filtered_vals = {k: v for k, v in vals.items()
                          if k in columns}
 
@@ -309,7 +313,7 @@ def handle_delete_rows_event(event, catalog_entry, state, columns, rows_saved, t
         vals = row['values']
 
         vals[SDC_DELETED_AT] = event_ts
-        vals[SDC_EXTRACTED_AT] = datetime.datetime.utcnow()
+        vals[SDC_EXTRACTED_AT] = time.time()
 
         filtered_vals = {k: v for k, v in vals.items()
                          if k in columns}

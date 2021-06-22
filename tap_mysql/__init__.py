@@ -300,7 +300,6 @@ def discover_catalog(mysql_conn, config):
                                             'table-key-properties',
                                             key_properties)
 
-
                 entry = CatalogEntry(
                     table=table_name,
                     stream=table_name,
@@ -314,10 +313,10 @@ def discover_catalog(mysql_conn, config):
 
 
 def add_bin_log_cols(schema, mdata):
-    for col in binlog.GENERATED_BIN_LOG_COLS:
+    for key, col in enumerate(binlog.GENERATED_BIN_LOG_COLS):
         col_schema = Schema(inclusion='automatic')
-        col_schema.type = ['string', 'null']
-        col_schema.format = 'date-time'
+        col_schema.type = binlog.GENERATED_BIN_LOG_TYPES[key]["type"]
+        col_schema.format = binlog.GENERATED_BIN_LOG_TYPES[key]["format"]
         schema[col] = col_schema
         metadata.write(mdata,
                        ('properties', col),
